@@ -1,0 +1,9 @@
+{
+  "lock": false,
+  "tasks": {
+    "check": "deno fmt --check && deno lint",
+    "main": "deno run --allow-net --allow-read main.ts",
+    "server": "deno run --allow-net server.ts",
+    "www": "deno run --allow-net --allow-read www.ts"
+  }
+}
