@@ -1,11 +1,11 @@
 import { parse } from "https://deno.land/std@0.202.0/flags/mod.ts";
 
 const defaultClientOptions = {
-  server: "speedtesting.deno.dev",
+  server: "https://speedtesting.deno.dev",
   pingCount: 100,
   downloadMegabytes: 100,
   uploadMegabytes: 100,
-  deadlineSeconds: 10,
+  deadlineSeconds: 30,
 };
 
 type SpeedTestClientOptions = typeof defaultClientOptions;
@@ -79,7 +79,7 @@ export async function speedTestClient(
 function testLatency(server: string, pingCount: number) {
   console.log("Measuring latency");
   return new Promise((resolve, _reject) => {
-    const socket = new WebSocket(`https://${server}/ws`);
+    const socket = new WebSocket(`${server}/ws`);
 
     let start = 0;
     let counter = 0;
@@ -130,7 +130,7 @@ async function testDownload(
       size: "1024",
     });
     const start = performance.now();
-    await fetch(`https://${server}/download${params.toString()}`);
+    await fetch(`${server}/download?${params.toString()}`);
     const partialDuration = performance.now() - start;
     durationMs += partialDuration;
   }
@@ -161,7 +161,7 @@ async function testUpload(
       nocache: crypto.randomUUID(),
     });
     const start = performance.now();
-    await fetch(`https://${server}/upload${params.toString()}`, {
+    await fetch(`${server}/upload?${params.toString()}`, {
       method: "POST",
       body: dataChunk,
     });

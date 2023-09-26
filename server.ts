@@ -2,6 +2,7 @@ import { VERSION } from "./version.ts";
 
 // Start the speed test server if this module is called directly
 if (import.meta.main) {
+  console.log("SPEED TEST SERVER");
   // The first argumetn is an optional port number
   const port = Deno.args.length === 1 ? Number(Deno.args[0]) : 8000;
   Deno.serve({ port }, speedTestHandler);

@@ -13,6 +13,9 @@ export function wwwHandler(request: Request): Response {
   switch (url.pathname) {
     case "/":
       return indexHandler();
+    case "/server.ts":
+    case "/client.ts":
+      return redirectHandler(url.pathname);
     default:
       return new Response(null, { status: 404 }); // Not Found
   }
@@ -47,4 +50,12 @@ function indexHandler(): Response {
   `;
 
   return new Response(html, { headers: { "Content-type": "text/html" } });
+}
+
+function redirectHandler(pathname: string) {
+  const path = `https://deno.land/x/speedtesting${pathname}`;
+  return new Response(`Redirecting to ${path}`, {
+    headers: { "Location": path },
+    status: 307,
+  });
 }
