@@ -60,4 +60,4 @@ Source code is available at
 
 [MIT License](./LICENSE)
 
-Copyright © 2021-present [Karel Klima](https://karelklima.com)
+Copyright © 2023 [Karel Klima](https://karelklima.com)
