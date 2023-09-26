@@ -1,4 +1,5 @@
 import { CSS, render } from "https://deno.land/x/gfm@0.2.5/mod.ts";
+import { VERSION } from "./version.ts";
 
 // Start the speed test server if this module is called directly
 if (import.meta.main) {
@@ -53,7 +54,7 @@ function indexHandler(): Response {
 }
 
 function redirectHandler(pathname: string) {
-  const path = `https://deno.land/x/speedtesting${pathname}`;
+  const path = `https://deno.land/x/speedtesting@${VERSION}${pathname}`;
   return new Response(`Redirecting to ${path}`, {
     headers: { "Location": path },
     status: 307,
