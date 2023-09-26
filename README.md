@@ -1,11 +1,11 @@
-# speedtest
+# speedtesting
 
-Deploy a server to measure network bandwith.
+Fast speed test server and client measure network bandwith.
 
 Run:
 
 ```
-deno run -A https://speedtest.deno.dev/server.ts
+deno run -A https://speedtesting.deno.dev/server.ts
 ```
 
 ---
