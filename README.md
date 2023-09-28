@@ -37,9 +37,9 @@ You can set following flags to customize the execution:
 - `server`: speed test server URL (defaults to `https://speedtesting.deno.dev`)
 - `pingCount`: how many pings to do to measure latency (defaults to 100)
 - `downloadMegabytes`: how many megabytes of data to download during download
-  test (defaults to 100)
+  test (defaults to 50)
 - `uploadMegabytes`: how many megabytes of data to upload during upload test
-  (defaults to 100)
+  (defaults to 50)
 - `deadlineSeconds`: maximum execution timeout for each subtest (defaults to 30
   seconds)
 
