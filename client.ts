@@ -1,74 +1,60 @@
 import { parse } from "https://deno.land/std@0.202.0/flags/mod.ts";
+import { z } from "https://deno.land/x/zod@v3.22.2/mod.ts";
 
-const defaultClientOptions = {
-  server: "https://speedtesting.deno.dev",
-  pingCount: 100,
-  downloadMegabytes: 100,
-  uploadMegabytes: 100,
-  deadlineSeconds: 30,
+const PositiveIntegerSchema = z.coerce.number().int().positive();
+const SpeedTestOptionsSchema = z.object({
+  server: z.string().url().default("https://speedtesting.deno.dev"),
+  pingCount: PositiveIntegerSchema.default(100),
+  downloadMegabytes: PositiveIntegerSchema.default(50),
+  uploadMegabytes: PositiveIntegerSchema.default(50),
+  deadlineSeconds: PositiveIntegerSchema.default(30),
+});
+
+export type SpeedTestOptions = z.input<typeof SpeedTestOptionsSchema>;
+type SpeedTestConfig = z.infer<typeof SpeedTestOptionsSchema>;
+
+// Definition of tests contained in the main speed test
+const TESTS = {
+  latency: testLatency,
+  download: testDownload,
+  upload: testUpload,
 };
 
-type SpeedTestClientOptions = typeof defaultClientOptions;
-
-// Start the speed test server if this module is called directly
-if (import.meta.main) {
-  // The first argument is an optional port number
-  const flags = parse(Deno.args);
-  const options = Object.keys(defaultClientOptions).reduce((acc, key) => {
-    if (flags[key]) {
-      acc[key] = key === "server" ? flags[key] : Number(flags[key]);
-    }
-    return acc;
-  }, {} as Record<string, unknown>);
-  const result = await speedTestClient(options as SpeedTestClientOptions);
-  console.log("SPEED TEST RESULT", result);
-}
+// Convenience type of the cumulative result of the speed test
+export type ErrorTestSubResult = { ok: false; error: string };
+export type SpeedTestResult = {
+  [K in keyof typeof TESTS]:
+    | Awaited<ReturnType<typeof TESTS[K]>>
+    | ErrorTestSubResult;
+};
 
 /**
  * Speed test client. Measures latency, download speed and upload speed
  * agains a predefined speed test server.
  */
-export async function speedTestClient(
-  options: Partial<SpeedTestClientOptions>,
-) {
-  const config = {
-    ...defaultClientOptions,
-    ...options,
-  };
+export async function speedTest(options: SpeedTestOptions) {
+  const config = SpeedTestOptionsSchema.parse(options);
 
   console.log("SPEED TEST CONFIGURATION");
   console.log(config);
 
-  const server = config.server;
   const deadlineMs = config.deadlineSeconds * 1000;
 
-  const latencyResult = await deadline(
-    testLatency(
-      config.server,
-      config.pingCount,
-    ),
-    deadlineMs,
-  );
-  const downloadResult = await deadline(
-    testDownload(
-      server,
-      config.downloadMegabytes,
-    ),
-    deadlineMs,
-  );
-  const uploadResult = await deadline(
-    testUpload(
-      server,
-      config.uploadMegabytes,
-    ),
-    deadlineMs,
-  );
+  const result = {} as Record<string, unknown>;
+  for (const testName of Object.keys(TESTS)) {
+    try {
+      const testFunction = TESTS[testName as keyof typeof TESTS];
+      const testResult = await deadline(testFunction(config), deadlineMs);
+      result[testName] = testResult;
+    } catch (err) {
+      result[testName] = {
+        ok: false,
+        error: err?.message ?? err,
+      };
+    }
+  }
 
-  return {
-    latency: latencyResult,
-    download: downloadResult,
-    upload: uploadResult,
-  };
+  return result as SpeedTestResult;
 }
 
 /**
@@ -76,9 +62,16 @@ export async function speedTestClient(
  * messages between client and server. Average latency equals to average
  * roundtrip of the messages.
  */
-function testLatency(server: string, pingCount: number) {
+function testLatency({ server, pingCount }: SpeedTestConfig) {
   console.log("Measuring latency");
-  return new Promise((resolve, _reject) => {
+
+  type LatencyResponse = {
+    ok: true;
+    durationMs: number;
+    latencyMs: number;
+    pingCount: number;
+  };
+  return new Promise<LatencyResponse>((resolve, reject) => {
     const socket = new WebSocket(`${server}/ws`);
 
     let start = 0;
@@ -87,9 +80,10 @@ function testLatency(server: string, pingCount: number) {
     socket.addEventListener("message", (event) => {
       if (event.data === "pong") {
         counter++;
-        if (counter >= pingCount) {
+        if (counter === pingCount) {
           const durationMs = performance.now() - start;
           const latencyMs = durationMs / pingCount;
+          socket.close();
           resolve({
             ok: true,
             durationMs,
@@ -107,9 +101,8 @@ function testLatency(server: string, pingCount: number) {
       socket.send("ping");
     });
 
-    socket.addEventListener("error", (event) => {
-      console.error(event);
-      resolve({ ok: false });
+    socket.addEventListener("error", (event: Event) => {
+      reject(new Error((event as ErrorEvent).message));
     });
   });
 }
@@ -118,23 +111,17 @@ function testLatency(server: string, pingCount: number) {
  * Test download speed by requesting the speed test server to send
  * chunks of data. Time to receive the data is measured for each chunk.
  */
-async function testDownload(
-  server: string,
-  downloadMegabytes: number,
-) {
+async function testDownload({ server, downloadMegabytes }: SpeedTestConfig) {
   console.log("Measuring download speed");
+  const size = 1 << 4; // 16 ~ Number of 64 KB chunks to download = 1 MB per iteration
   let durationMs = 0;
   for (let i = 0; i < downloadMegabytes; i++) {
-    const params = new URLSearchParams({
-      nocache: crypto.randomUUID(),
-      size: "1024",
-    });
     const start = performance.now();
-    await fetch(`${server}/download?${params.toString()}`);
+    await fetch(`${server}/download/${size}?nocache=${crypto.randomUUID()}`);
     const partialDuration = performance.now() - start;
     durationMs += partialDuration;
   }
-  const downloadSpeedMbps = downloadMegabytes * 8 / durationMs * 1000;
+  const downloadSpeedMbps = calculateMbps(downloadMegabytes, durationMs);
   return {
     ok: true,
     durationMs,
@@ -147,28 +134,22 @@ async function testDownload(
  * Test upload speed by sending chunks of data to speed test server.
  * Time to server aknowledging the upload is measured for each chunk.
  */
-async function testUpload(
-  server: string,
-  uploadMegabytes: number,
-) {
+async function testUpload({ server, uploadMegabytes }: SpeedTestConfig) {
   console.log("Measuring upload speed");
   let durationMs = 0;
 
   const dataChunk = new Uint8Array(1 << 20); // 1 MB
 
   for (let i = 0; i < uploadMegabytes; i++) {
-    const params = new URLSearchParams({
-      nocache: crypto.randomUUID(),
-    });
     const start = performance.now();
-    await fetch(`${server}/upload?${params.toString()}`, {
+    await fetch(`${server}/upload?nocache=${crypto.randomUUID()}`, {
       method: "POST",
       body: dataChunk,
     });
     const partialDuration = performance.now() - start;
     durationMs += partialDuration;
   }
-  const uploadSpeedMbps = uploadMegabytes * 8 / durationMs * 1000;
+  const uploadSpeedMbps = calculateMbps(uploadMegabytes, durationMs);
   return {
     ok: true,
     durationMs,
@@ -178,11 +159,35 @@ async function testUpload(
 }
 
 /**
+ * Helper function to calculate network speed in megabits per second
+ */
+function calculateMbps(megabytes: number, milliseconds: number) {
+  const megabits = megabytes << 3;
+  const seconds = milliseconds / 1000;
+  return megabits / seconds;
+}
+
+/**
  * Helper function to limit execution time of tests
  */
-function deadline<T>(promise: T, ms: number) {
-  const stop = new Promise((resolve, _reject) => {
-    setTimeout(() => resolve({ ok: false, deadline: true }), ms);
+function deadline<T>(promise: T, ms: number): Promise<T> {
+  const stop = new Promise<T>((_resolve, reject) => {
+    setTimeout(() => reject(new Error("Deadline reached")), ms);
   });
   return Promise.race([promise, stop]);
+}
+
+// Start the speed test server if this module is called directly
+if (import.meta.main) {
+  // The first argument is an optional port number
+  const flags = parse(Deno.args);
+  try {
+    const result = await speedTest(flags as SpeedTestOptions);
+    console.log("SPEED TEST RESULT", result);
+    Deno.exit();
+  } catch (err) {
+    console.log("SPEED TEST FAILED");
+    console.error(err.message ?? err);
+    Deno.exit(1);
+  }
 }
