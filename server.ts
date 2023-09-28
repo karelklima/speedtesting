@@ -1,48 +1,32 @@
+import {
+  Status,
+  STATUS_TEXT,
+} from "https://deno.land/std@0.202.0/http/http_status.ts";
+import { Hono, HTTPException } from "https://deno.land/x/hono@v3.7.2/mod.ts";
 import { VERSION } from "./version.ts";
 
-// Start the speed test server if this module is called directly
-if (import.meta.main) {
-  console.log("SPEED TEST SERVER");
-  // The first argumetn is an optional port number
-  const port = Deno.args.length === 1 ? Number(Deno.args[0]) : 8000;
-  Deno.serve({ port }, speedTestHandler);
-}
+// Dummy chunk of data to send in download response
+const DATA_CHUNK_SIZE = 1 << 16; // 64 KB
+const DATA_CHUNK = new Uint8Array(DATA_CHUNK_SIZE);
 
-/**
- * Main router / handler of the speed test server requests
- */
-export async function speedTestHandler(request: Request): Promise<Response> {
-  const url = new URL(request.url);
+// Download ReadableStream inner queue size
+const HIGH_WATER_MARK = DATA_CHUNK_SIZE << 3; // 512 KB
 
-  try {
-    switch (url.pathname) {
-      case "/ws":
-        return wsHandler(request);
-      case "/download":
-        return downloadHandler(request);
-      case "/upload": {
-        const uploadResponse = await uploadHandler(request);
-        return uploadResponse;
-      }
-      case "/status":
-        return statusHandler(request);
-      default:
-        return statusResponse(404); // Not Found
-    }
-  } catch (_err) {
-    // If an error is caught here, it is likely that validation of incoming request failed
-    return statusResponse(400); // Bad Request
-  }
-}
+// Enforce upload limit to prevent taking down the speed test server
+const MAX_UPLOAD_LIMIT = 1 << 20; // 1 MB
+
+export const server = new Hono();
 
 /**
  * WebSocket endpoint - sends "pong" message when "ping" message is received
  * to allow for latency calculation
  */
-function wsHandler(request: Request): Response {
-  assert(request.headers.get("upgrade") === "websocket");
+server.get("/ws", (ctx) => {
+  if (ctx.req.header("upgrade") !== "websocket") {
+    throw new HTTPException(Status.BadRequest);
+  }
 
-  const { socket, response } = Deno.upgradeWebSocket(request);
+  const { socket, response } = Deno.upgradeWebSocket(ctx.req.raw);
 
   socket.addEventListener("message", (event) => {
     if (event.data === "ping") {
@@ -51,67 +35,59 @@ function wsHandler(request: Request): Response {
   });
 
   return response;
-}
-
-// Dummy chunk of data to send in response
-const dataChunk = new Uint8Array(1 << 10); // 1 KB
+});
 
 /**
  * Download endpoint - sends content of required size to clients.
  * Content size is specified using `size` URL param and should contain
- * the number of KB to be sent to client.
+ * the number of 64 KB chunks to be sent to client.
  */
-function downloadHandler(request: Request): Response {
-  assert(request.method === "GET");
-  const size = Number.parseInt(new URL(request.url).searchParams.get("size")!);
-  assert(size > 0);
+server.get("/download/:size{[1-9][0-9]*}", (ctx) => {
+  const chunkCount = Number(ctx.req.param().size);
+  const contentLength = chunkCount * DATA_CHUNK_SIZE;
+  let enqueuedChunks = 0;
 
-  let remainingBlocks = size;
   const body = new ReadableStream({
     pull(controller) {
-      controller.enqueue(dataChunk);
-      remainingBlocks--;
-      if (remainingBlocks <= 0) {
+      controller.enqueue(DATA_CHUNK);
+      enqueuedChunks++;
+      if (enqueuedChunks === chunkCount) {
         controller.close();
       }
     },
+    autoAllocateChunkSize: DATA_CHUNK_SIZE,
+  }, {
+    highWaterMark: HIGH_WATER_MARK, // let the controller buffer chunks upfront
   });
 
-  return new Response(body, {
-    headers: { "Content-length": `${size << 10}` },
-  });
-}
-
-// Enforce upload limit to prevent taking down the speed test server
-const MAX_UPLOAD_LIMIT = 1 << 20; // 1 MB
+  ctx.header("Content-Length", String(contentLength));
+  return ctx.body(body);
+});
 
 /**
  * Upload endpoint - accepts incoming data and returns number of KBs read
  */
-async function uploadHandler(request: Request): Promise<Response> {
-  assert(request.method === "POST");
-
+server.post("/upload", async (ctx) => {
   let readBytes = 0;
+
   const sink = new WritableStream<Uint8Array>({
     write(chunk) {
       readBytes += chunk.length;
       if (readBytes > MAX_UPLOAD_LIMIT) {
-        throw new Error();
+        throw new HTTPException(Status.BadRequest);
       }
     },
   });
 
-  await request.body?.pipeTo(sink);
+  await ctx.req.raw.body?.pipeTo(sink); // wait to fully download the content
 
-  return new Response(`${readBytes >> 10}`);
-}
+  return ctx.text(`${readBytes >> 10}`); // total content read in KB
+});
 
 /**
  * Status endpoint - returns system information about the speed test server
  */
-function statusHandler(request: Request): Response {
-  assert(request.method === "GET");
-
+server.get("/status", (ctx) => {
   const status = {
     status: "OK",
     version: {
@@ -121,15 +97,27 @@ function statusHandler(request: Request): Response {
     memoryUsage: Deno.memoryUsage(),
   };
 
-  return Response.json(status);
-}
+  return ctx.json(status);
+});
 
-function statusResponse(status: number) {
-  return new Response(null, { status });
-}
+/**
+ * Error handler
+ */
+server.onError((err) => {
+  const status: Status = err instanceof HTTPException
+    ? err.status
+    : Status.InternalServerError;
+  return new Response(`${status} ${STATUS_TEXT[status]}`, { status });
+});
 
-function assert(expression: unknown): asserts expression {
-  if (!expression) {
-    throw Error();
+// Start the speed test server if this module is called directly
+if (import.meta.main) {
+  console.log("SPEED TEST SERVER");
+  // The first argument is an optional port number
+  const port = Deno.args.length === 1 ? Number(Deno.args[0]) : 8000;
+  if (!Number.isInteger(port)) {
+    console.error(`Invalid port number specified: "${Deno.args[0]}"`);
+    Deno.exit(1);
   }
+  Deno.serve({ port }, server.fetch);
 }
